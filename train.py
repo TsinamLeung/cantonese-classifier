@@ -1,5 +1,6 @@
 from flax.serialization import msgpack_serialize
 import jax
+from jax import nn
 import jax.numpy as np
 import jax.random as rand
 import math
@@ -20,12 +21,12 @@ params = model.params
 
 convert = OpenCC('hk2s').convert
 
-def cross_entropy_loss(logits, labels):
-    exp_logits = np.exp(logits)
-    softmax_probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
-    exp_loss = np.take_along_axis(softmax_probs, labels[..., None], axis=-1)
-    loss = -np.log(exp_loss)
-    return np.sum(loss)
+def bce_loss(logits, labels):
+    logits = nn.log_softmax(logits)
+    term_0 = logits[:, 0] * ~labels
+    term_1 = logits[:, 1] * labels
+    loss = -(term_0 + term_1).mean()
+    return loss
 
 def load_dataset(text_file, label_file):
     sentences = []
@@ -52,13 +53,21 @@ def save_params(params, filename):
 train_inputs, train_masks, train_labels = load_dataset('train.text.txt', 'train.label.txt')
 train_size = len(train_inputs)
 
-@jax.jit
 @jax.value_and_grad
 def forward(params, key, inputs, labels, mask):
     outputs = model(input_ids=inputs, attention_mask=mask, params=params, train=True, dropout_rng=key)
     logits = outputs.logits
-    loss = cross_entropy_loss(logits, labels)
+    loss = bce_loss(logits, labels)
     return loss
+
+@jax.jit
+def train_step(params, key, inputs, labels, mask, opt_state):
+    loss, grads = forward(params, key, inputs, labels, mask)
+
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+
+    return loss, params, opt_state
 
 @jax.jit
 def predict(params, inputs, mask):
@@ -83,7 +92,7 @@ opt_state = optimizer.init(params)
 
 permute = lambda key: onp.asarray(jax.jit(lambda key: rand.permutation(key, train_size), backend='cpu')(key))
 
-n_batch = math.ceil(train_size // batch_size)
+n_batch = math.ceil(train_size / batch_size)
 
 for epoch in range(1, n_epochs + 1):
     key, subkey = rand.split(key)
@@ -98,13 +107,10 @@ for epoch in range(1, n_epochs + 1):
         batch_masks = train_masks[batch_idx]
 
         key, subkey = rand.split(key)
-        loss, grads = forward(params, subkey, batch_inputs, batch_labels, batch_masks)
-
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
+        loss, params, opt_state = train_step(params, subkey, batch_inputs, batch_labels, batch_masks, opt_state)
 
         total_loss += loss.item()
 
-    print(f'Epoch {epoch}, total loss {total_loss:.2f}')
+    print(f'Epoch {epoch}, total loss {total_loss:.4f}')
 
 save_params(params, 'params.dat')
