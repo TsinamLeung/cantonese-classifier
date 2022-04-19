@@ -90,7 +90,7 @@ optimizer_scheme = {
 optimizer = optax.multi_transform(optimizer_scheme, param_labels)
 opt_state = optimizer.init(params)
 
-permute = lambda key: onp.asarray(jax.jit(lambda key: rand.permutation(key, train_size), backend='cpu')(key))
+permute = (lambda f: lambda key: onp.asarray(f(key)))(jax.jit(lambda key: rand.permutation(key, train_size), backend='cpu'))
 
 n_batch = math.ceil(train_size / batch_size)
 
